@@ -1827,6 +1827,27 @@ html.player-open .player-media-controls {
     scrollbar-width: none;
 }
 
+/* --- Paid notices: cheers, Power-ups, Hype Chats --- */
+
+.bits-gem {
+    width: 1.05em;
+    height: 1.05em;
+    margin-right: 4px;
+    vertical-align: -0.18em;
+}
+
+.paid-head {
+    font-weight: 600;
+}
+
+.paid-head .badge {
+    vertical-align: -0.15em;
+}
+
+.cheer-total {
+    font-weight: 800;
+}
+
 /* --- Player toolbar: flat icon buttons; compact on phones --- */
 
 html.player-open .player-controls {

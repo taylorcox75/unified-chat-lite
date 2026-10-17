@@ -258,26 +258,60 @@ const CHEER_TIERS = [
   [1, "#979797"],
 ];
 
-function cheermoteMarkup(word) {
-  const match = /^(.+?)(\d+)$/.exec(word);
-  if (!match) return null;
-  const prefix = match[1].toLowerCase();
-  if (!CHEERMOTE_PREFIXES.has(prefix)) return null;
-  const amount = Number(match[2]);
-  const [tier, color] = CHEER_TIERS.find(([min]) => amount >= min) || CHEER_TIERS[CHEER_TIERS.length - 1];
-  const src = `https://d3aqoihi2n8ty8.cloudfront.net/actions/${prefix}/dark/animated/${tier}/1.gif`;
-  return `<img class="emote" src="${src}" alt="${escapeHtml(word)}" title="${escapeHtml(word)}"><span class="cheer-amount" style="color:${color}">${amount}</span>`;
+const CHEER_WORD_RE = /^([a-z][a-z0-9_]*?)(\d+)$/i;
+const bitsGemSvg = (color) => `<svg class="bits-gem" viewBox="0 0 24 24" aria-hidden="true" style="color:${color}"><path fill="currentColor" d="M12 2 3.5 9.5 12 22l8.5-12.5z"/><path fill="#fff" opacity=".35" d="M12 2 7.5 9.5h9z"/></svg>`;
+const POWER_UP_SVG = `<svg class="bits-gem" viewBox="0 0 24 24" aria-hidden="true" style="color:#ffd166"><path fill="currentColor" d="M13.5 2 4 13.5h6.5L9.5 22 20 9.5h-6.5z"/></svg>`;
+
+function cheerTier(amount) {
+  return CHEER_TIERS.find(([min]) => amount >= min) || CHEER_TIERS[CHEER_TIERS.length - 1];
 }
 
-function renderPlainText(text, platform, bits) {
+// Words to render as cheermotes. Global prefixes always count; anything else
+// shaped like one (a channel's own cheermote, e.g. "xqcCheer100") counts only
+// when all such words add up to exactly the bits sent, so "Team10" stays text.
+function findCheerWords(text, bits) {
+  const known = new Set();
+  const all = new Set();
+  let total = 0;
+  for (const word of text.split(/\s+/)) {
+    const match = CHEER_WORD_RE.exec(word);
+    if (!match) continue;
+    all.add(word);
+    total += Number(match[2]);
+    if (CHEERMOTE_PREFIXES.has(match[1].toLowerCase())) known.add(word);
+  }
+  return total === bits ? all : known;
+}
+
+function cheermoteMarkup(word) {
+  const match = CHEER_WORD_RE.exec(word);
+  const prefix = match[1].toLowerCase();
+  const amount = Number(match[2]);
+  const [tier, color] = cheerTier(amount);
+  const image = CHEERMOTE_PREFIXES.has(prefix)
+    ? `<img class="emote" src="https://d3aqoihi2n8ty8.cloudfront.net/actions/${prefix}/dark/animated/${tier}/1.gif" alt="${escapeHtml(word)}" title="${escapeHtml(word)}">`
+    : `<span title="${escapeHtml(word)}">${bitsGemSvg(color)}</span>`; // channel cheermote: no public image URL
+  return `${image}<span class="cheer-amount" style="color:${color}">${amount}</span>`;
+}
+
+// "<gem> Name cheered 1,000 bits:" / "<bolt> Name gigantified an emote:" ahead of the user's message.
+function paidNoticeMarkup(message) {
+  const color = ensureReadableColor(message.color);
+  const author = `<span class="author-name"${color ? ` style="color:${color}"` : ""}>${escapeHtml(message.author)}</span>`;
+  const colon = message.text ? ":" : "";
+  if (message.bits > 0) {
+    const [, tierColor] = cheerTier(message.bits);
+    return `<span class="paid-head">${bitsGemSvg(tierColor)}${badgesMarkup(message)}${author} cheered <strong class="cheer-total" style="color:${tierColor}">${message.bits.toLocaleString()} ${message.bits === 1 ? "bit" : "bits"}</strong>${colon}</span>`;
+  }
+  return `<span class="paid-head">${POWER_UP_SVG}${badgesMarkup(message)}${author} ${escapeHtml(message.notice)}${colon}</span>`;
+}
+
+function renderPlainText(text, platform, cheers) {
   if (platform !== "twitch" && platform !== "kick") return linkifyText(text);
   const emoteMap = showThirdPartyEmotes ? thirdPartyEmotes.get(platform) : undefined;
-  if (!emoteMap?.size && !bits) return linkifyText(text);
+  if (!emoteMap?.size && !cheers?.size) return linkifyText(text);
   return text.split(" ").map((word) => {
-    if (bits) {
-      const cheer = cheermoteMarkup(word);
-      if (cheer) return cheer;
-    }
+    if (cheers?.has(word)) return cheermoteMarkup(word);
     const url = emoteMap?.get(word);
     return url ? emoteImg(url, word) : linkifyText(word);
   }).join(" ");
@@ -285,7 +319,8 @@ function renderPlainText(text, platform, bits) {
 
 
 function renderMessageText(text, emotes, platform, bits = 0) {
-  if (!emotes || !emotes.length) return renderPlainText(text, platform, bits);
+  const cheers = bits > 0 ? findCheerWords(text, bits) : null;
+  if (!emotes || !emotes.length) return renderPlainText(text, platform, cheers);
   const emoteUrl = EMOTE_IMAGE_URLS[platform] || EMOTE_IMAGE_URLS.twitch;
   const chars = Array.from(text);
   const sorted = [...emotes].sort((a, b) => a.begin - b.begin);
@@ -293,13 +328,13 @@ function renderMessageText(text, emotes, platform, bits = 0) {
   let cursor = 0;
   for (const emote of sorted) {
     if (emote.begin > cursor) {
-      result += renderPlainText(chars.slice(cursor, emote.begin).join(""), platform, bits);
+      result += renderPlainText(chars.slice(cursor, emote.begin).join(""), platform, cheers);
     }
     result += emoteImg(emoteUrl(emote.id), emote.text);
     cursor = emote.end;
   }
   if (cursor < chars.length) {
-    result += renderPlainText(chars.slice(cursor).join(""), platform, bits);
+    result += renderPlainText(chars.slice(cursor).join(""), platform, cheers);
   }
   return result;
 }
@@ -474,9 +509,13 @@ function renderMessages() {
       messageClass += " mention";
     }
     if (message.kind === "system") {
+      const paid = message.bits > 0 || Boolean(message.notice);
+      const body = message.text
+        ? `<span class="message-text${paid ? "" : " system-notice-text"}">${renderMessageText(message.text, message.emotes, message.platform, message.bits)}</span>`
+        : "";
       return `
-        <article class="${messageClass} system-notice" data-platform="${message.platform}"${overlayFadeStyle(message)}>
-          <span class="message-topline"><span class="message-time">${formatTime(message.timestamp)}</span> ${showPlatform ? platformMarkup(message.platform) : ""}${sourceAvatarMarkup(message)}<span class="message-text system-notice-text">${renderMessageText(message.text, message.emotes, message.platform, message.bits)}</span></span>
+        <article class="${messageClass} system-notice${paid ? " paid-notice" : ""}" data-platform="${message.platform}"${overlayFadeStyle(message)}>
+          <span class="message-topline"><span class="message-time">${formatTime(message.timestamp)}</span> ${showPlatform ? platformMarkup(message.platform) : ""}${sourceAvatarMarkup(message)}${paid ? `${paidNoticeMarkup(message)} ` : ""}${body}</span>
         </article>
       `;
     }
