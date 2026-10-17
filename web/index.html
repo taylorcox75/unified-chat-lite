@@ -37,7 +37,8 @@
     <link rel="apple-touch-icon" href="assets/icon-192.png">
     <link rel="stylesheet" href="styles.css">
     <script>
-        if ((new URLSearchParams(location.search).get("expand") ?? "0") !== "0") document.documentElement.classList.add("expand-mode");
+        const startParams = new URLSearchParams(location.search);
+        if ((startParams.get("expand") ?? "0") !== "0" || (startParams.get("tv") ?? "0") !== "0") document.documentElement.classList.add("expand-mode");
     </script>
 
     <script type="application/ld+json">
@@ -239,9 +240,16 @@
             </section>
         </main>
         <div class="player-controls">
-            <div id="player-sources" class="player-sources hidden"></div>
-            <button id="player-toggle" class="player-toggle" type="button" title="Show stream player">&#9654;</button>
-            <button id="expand-exit" class="player-toggle expand-exit" type="button" title="Collapse the chat (Esc)">&#x2715;</button>
+            <div class="player-media-controls">
+                <div id="player-sources" class="player-sources hidden"></div>
+            </div>
+            <div class="player-window-controls">
+                <button id="player-cast" class="player-toggle hidden" type="button"></button>
+                <button id="player-layout" class="player-toggle hidden" type="button"></button>
+                <button id="player-fullscreen" class="player-toggle hidden" type="button"></button>
+                <button id="player-toggle" class="player-toggle" type="button" title="Show stream player">&#9654;</button>
+                <button id="expand-exit" class="player-toggle expand-exit" type="button" title="Collapse the chat (Esc)">&#x2715;</button>
+            </div>
         </div>
         <div id="alert-frames" class="alert-frames" aria-hidden="true"></div>
     </div>
@@ -276,6 +284,8 @@
                     <ul>
                         <li>When expanded, press <strong>&#9654;</strong> (top right) &mdash; starts muted</li>
                         <li>Click the platform icons to switch source</li>
+                        <li>The layout button puts the video beside the chat &mdash; made for big screens</li>
+                        <li>The AirPlay / Cast button sends the Twitch or Kick video to your TV &mdash; the chat stays on your device</li>
                         <li>YouTube appears once the channel is live</li>
                     </ul>
                 </section>

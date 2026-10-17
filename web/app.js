@@ -21,8 +21,8 @@ if (isOverlay) {
   if (OVERLAY_NEVER_FADE) root.classList.add("overlay-no-fade");
 }
 
-// Expand (?expand=1): the main page expands into the popout layout in place.
-let isExpanded = !isPopout && (pageParams.get("expand") ?? "0") !== "0";
+// Expand (?expand=1): the main page expands into the popout layout in place; ?tv=1 implies it.
+let isExpanded = !isPopout && ((pageParams.get("expand") ?? "0") !== "0" || (pageParams.get("tv") ?? "0") !== "0");
 document.documentElement.classList.toggle("expand-mode", isExpanded);
 
 const state = {
@@ -819,6 +819,7 @@ function setExpanded(on, { animate = true } = {}) {
     params.set("expand", "1");
   } else {
     params.delete("expand");
+    params.delete("tv");
   }
   const query = params.toString();
   window.history.replaceState(null, "", query ? `?${query}` : window.location.pathname);
@@ -976,54 +977,338 @@ if (togglePlatform) {
 // Stream player (popout + expanded chat). Twitch embeds require HTTPS (localhost excepted).
 const PLAYER_STORAGE_KEY = "popoutPlayer";
 const PLAYER_PLATFORMS = ["twitch", "kick", "youtube"];
+// Platforms the server can resolve to a raw HLS stream for the native player (AirPlay, Chromecast).
+const NATIVE_PLATFORMS = ["twitch", "kick", "youtube"];
+// Twitch refuses to embed on plain-HTTP hosts (e.g. a Raspberry Pi on the LAN), so play it natively there.
+const twitchEmbedBlocked = window.location.protocol !== "https:" && window.location.hostname !== "localhost";
+// ?tv=1 opens straight into the side-by-side player (shared links).
+const tvParam = !isOverlay && (pageParams.get("tv") ?? "0") !== "0";
 
 // Embed URL for a platform, or null when it can't be played right now.
 function playerEmbedSrc(platform) {
   const channel = playerState.channels[platform];
   if (!channel) return null;
+  const muted = !playerState.sound;
   switch (platform) {
     case "twitch":
-      return `https://player.twitch.tv/?channel=${encodeURIComponent(channel)}&parent=${encodeURIComponent(window.location.hostname)}&muted=true&autoplay=true`;
+      return `https://player.twitch.tv/?channel=${encodeURIComponent(channel)}&parent=${encodeURIComponent(window.location.hostname)}&muted=${muted}&autoplay=true`;
     case "kick":
-      return `https://player.kick.com/${encodeURIComponent(channel)}?muted=true&autoplay=true`;
+      return `https://player.kick.com/${encodeURIComponent(channel)}?muted=${muted}&autoplay=true`;
     case "youtube": {
       const videoId = state.statuses.get("youtube")?.video_id;
       return videoId
-        ? `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?autoplay=1&mute=1`
+        ? `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?autoplay=1&mute=${muted ? 1 : 0}`
         : null;
     }
   }
   return null;
 }
 
+const PLAYER_ICONS = {
+  play: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>`,
+  hide: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 16v1a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h4a2 2 0 0 1 2 2v3.34l1 1L22 7v10M2 2l20 20"/></svg>`,
+  cast: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6M2 12a8 8 0 0 1 8 8M2 16a4 4 0 0 1 4 4"/><circle cx="2.5" cy="19.5" r="1.2" fill="currentColor"/></svg>`,
+  airplay: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M6 17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2"/><path fill="currentColor" d="M12 14l5 7H7z"/></svg>`,
+  side: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path fill="currentColor" d="M15 5h6v14h-6z" opacity=".55"/></svg>`,
+  stack: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path fill="currentColor" d="M3 13h18v6H3z" opacity=".55"/></svg>`,
+  fullscreen: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`,
+  exitFullscreen: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>`,
+};
+
 const playerPaneEl = document.getElementById("player-pane");
 const playerFrameEl = document.getElementById("player-frame");
 const playerToggleEl = document.getElementById("player-toggle");
 const playerSourcesEl = document.getElementById("player-sources");
+const playerCastEl = document.getElementById("player-cast");
+const playerLayoutEl = document.getElementById("player-layout");
+const playerFullscreenEl = document.getElementById("player-fullscreen");
 
-const playerState = { open: false, source: null, channels: {} };
+// sound: follows the native player's own mute control, so a source switch keeps it; embeds start muted.
+// native: the user picked AirPlay/Chromecast, so Twitch/Kick play in our own <video>.
+// casting: Chromecast device name while a cast session is running.
+// mini: the video kept playing in a floating corner player after a swipe out of the full window (phones).
+const playerState = {
+  open: false, source: null, layout: null, sound: false, native: false, casting: null, mini: false, channels: {},
+};
 try {
   const stored = JSON.parse(window.localStorage.getItem(PLAYER_STORAGE_KEY) || "{}");
   playerState.open = Boolean(stored.open);
   playerState.source = stored.source || null;
+  playerState.layout = stored.layout === "side" || stored.layout === "stack" ? stored.layout : null;
 } catch (_) {}
+// First visit: side-by-side on wide landscape screens, stacked elsewhere.
+playerState.layout ??= window.matchMedia("(min-width: 1000px) and (min-aspect-ratio: 4/3)").matches ? "side" : "stack";
+if (tvParam) {
+  playerState.open = true;
+  playerState.layout = "side";
+  if (PLAYER_PLATFORMS.includes(pageParams.get("source"))) playerState.source = pageParams.get("source");
+}
 
 function savePlayerState() {
   try {
     window.localStorage.setItem(
       PLAYER_STORAGE_KEY,
-      JSON.stringify({ open: playerState.open, source: playerState.source })
+      JSON.stringify({ open: playerState.open, source: playerState.source, layout: playerState.layout })
     );
   } catch (_) {}
 }
 
+const fullscreenSupported = Boolean(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+const isFullscreen = () => Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+
+// --- Native player: HLS straight from the platform CDN (Safari natively, hls.js elsewhere) ---
+
+const STREAM_URL_TTL_MS = 60_000;
+const NATIVE_RETRY_MS = 30_000;
+const streamUrlCache = new Map();
+const nativeFailures = new Map();
+let activeHls = null;
+let hlsLoader = null;
+
+const usesNativePlayer = (platform) => NATIVE_PLATFORMS.includes(platform)
+  && (playerState.native || (platform === "twitch" && twitchEmbedBlocked));
+const streamKey = (platform) => `${platform}:${playerState.channels[platform]}`;
+
+function cachedStreamUrl(platform) {
+  const hit = streamUrlCache.get(streamKey(platform));
+  return hit && Date.now() - hit.at < STREAM_URL_TTL_MS ? hit.url : null;
+}
+
+async function fetchStreamUrl(platform) {
+  const cached = cachedStreamUrl(platform);
+  if (cached) return cached;
+  const key = streamKey(platform);
+  const response = await fetch(`/stream/${platform}/${encodeURIComponent(playerState.channels[platform])}`);
+  if (!response.ok) throw new Error("offline");
+  const { url } = await response.json();
+  streamUrlCache.set(key, { url, at: Date.now() });
+  return url;
+}
+
+function loadHlsJs() {
+  hlsLoader ??= new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "vendor/hls.light.min.js";
+    script.onload = resolve;
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+  return hlsLoader;
+}
+
+// Replaces whatever plays in the player frame, tearing down hls.js first.
+function setPlayerFrame(html) {
+  activeHls?.destroy();
+  activeHls = null;
+  playerFrameEl.innerHTML = html;
+}
+
+function showPlayerMessage(text) {
+  setPlayerFrame(`<div class="player-empty">${text}</div>`);
+}
+
+function failNativePlayer(platform) {
+  nativeFailures.set(streamKey(platform), Date.now());
+  streamUrlCache.delete(streamKey(platform));
+  showPlayerMessage(`Couldn't load the ${PLATFORM_NAMES[platform]} stream &mdash; is the channel live?`);
+}
+
+// Safari plays (and AirPlays) the server's copy of the playlist, which adds the chat as a
+// "Chat" caption track so it shows on the TV; captions stay hidden on the phone itself.
+function airplayMasterUrl(platform) {
+  const chat = PLATFORMS.filter((p) => playerState.channels[p]).map((p) => `${p}:${playerState.channels[p]}`).join("+");
+  return `${window.location.origin}/airplay/${platform}/${encodeURIComponent(playerState.channels[platform])}/${encodeURIComponent(chat)}/master.m3u8`;
+}
+
+function syncChatCaptions(video) {
+  const onTv = Boolean(video.webkitCurrentPlaybackTargetIsWireless);
+  for (const track of video.textTracks) {
+    if (track.kind === "subtitles" || track.kind === "captions") track.mode = onTv ? "showing" : "hidden";
+  }
+}
+
+function attachStream(video, url, platform) {
+  if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    video.src = url;
+    return;
+  }
+  loadHlsJs().then(() => {
+    if (!video.isConnected) return;
+    if (!window.Hls?.isSupported()) {
+      showPlayerMessage("This browser can't play the stream directly.");
+      return;
+    }
+    activeHls = new window.Hls({ lowLatencyMode: true });
+    activeHls.on(window.Hls.Events.ERROR, (_event, data) => {
+      if (data.fatal && video.isConnected) failNativePlayer(platform);
+    });
+    activeHls.loadSource(url);
+    activeHls.attachMedia(video);
+  }, () => showPlayerMessage("Couldn't load the video player."));
+}
+
+function mountNativePlayer(platform) {
+  const key = streamKey(platform);
+  const existing = playerFrameEl.querySelector("video.native-player");
+  if (existing?.dataset.key === key) {
+    existing.muted = !playerState.sound;
+    return;
+  }
+  if (Date.now() - (nativeFailures.get(key) || 0) < NATIVE_RETRY_MS) {
+    if (!playerFrameEl.querySelector(".player-empty")) failNativePlayer(platform);
+    return;
+  }
+  setPlayerFrame(`<video class="native-player" playsinline autoplay controls x-webkit-airplay="allow"${playerState.sound ? "" : " muted"}></video>`);
+  const video = playerFrameEl.querySelector("video");
+  video.dataset.key = key;
+  video.muted = !playerState.sound;
+  // Keep our Unmute button in step with the video's own volume controls.
+  video.addEventListener("volumechange", () => {
+    if (playerState.sound === !video.muted) return;
+    playerState.sound = !video.muted;
+    renderPlayerButtons();
+  });
+  video.addEventListener("error", () => {
+    if (video.isConnected && !activeHls) failNativePlayer(platform);
+  });
+  if (airplaySupported) {
+    const sync = () => syncChatCaptions(video);
+    video.textTracks.addEventListener("addtrack", sync);
+    video.addEventListener("webkitcurrentplaybacktargetiswirelesschanged", sync);
+    video.src = airplayMasterUrl(platform);
+    return;
+  }
+  const url = cachedStreamUrl(platform);
+  if (url) {
+    attachStream(video, url, platform);
+  } else {
+    fetchStreamUrl(platform).then(
+      (resolved) => video.isConnected && attachStream(video, resolved, platform),
+      () => video.isConnected && failNativePlayer(platform)
+    );
+  }
+}
+
+// --- AirPlay (Safari) and Chromecast (Chrome): the video goes to the TV, the chat stays here ---
+
+const airplaySupported = typeof window.WebKitPlaybackTargetAvailabilityEvent !== "undefined";
+const castState = { ready: false, available: false, requested: false };
+
+function loadCastSdk() {
+  if (castState.requested || airplaySupported || !window.chrome || !window.isSecureContext) return;
+  castState.requested = true;
+  window.__onGCastApiAvailable = (isAvailable) => {
+    if (!isAvailable) return;
+    const context = window.cast.framework.CastContext.getInstance();
+    context.setOptions({
+      receiverApplicationId: window.chrome.cast.media.DEFAULT_MEDIA_RECEIVER_APP_ID,
+      autoJoinPolicy: window.chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED,
+    });
+    context.addEventListener(window.cast.framework.CastContextEventType.CAST_STATE_CHANGED, (event) => {
+      castState.available = event.castState !== window.cast.framework.CastState.NO_DEVICES_AVAILABLE;
+      renderPlayerButtons();
+    });
+    context.addEventListener(window.cast.framework.CastContextEventType.SESSION_STATE_CHANGED, (event) => {
+      if (event.sessionState === window.cast.framework.SessionState.SESSION_ENDED && playerState.casting) {
+        playerState.casting = null;
+        renderPlayer();
+      }
+    });
+    castState.ready = true;
+    renderPlayerButtons();
+  };
+  const script = document.createElement("script");
+  script.src = "https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1";
+  script.async = true;
+  document.head.appendChild(script);
+}
+
+function startAirPlay() {
+  playerState.native = true;
+  renderPlayer();
+  const video = playerFrameEl.querySelector("video.native-player");
+  // The picker needs this click's user gesture; the src is set synchronously above.
+  try {
+    video?.webkitShowPlaybackTargetPicker();
+  } catch (_) {}
+}
+
+async function startChromecast() {
+  const context = window.cast.framework.CastContext.getInstance();
+  if (playerState.casting) {
+    context.endCurrentSession(true);
+    playerState.casting = null;
+    renderPlayer();
+    return;
+  }
+  const platform = playerState.source;
+  const channel = playerState.channels[platform];
+  const urlPromise = fetchStreamUrl(platform);
+  urlPromise.catch(() => {});
+  try {
+    await context.requestSession(); // device picker; rejects when dismissed
+  } catch (_) {
+    return;
+  }
+  const session = context.getCurrentSession();
+  try {
+    const media = new window.chrome.cast.media.MediaInfo(await urlPromise, "application/x-mpegURL");
+    media.streamType = window.chrome.cast.media.StreamType.LIVE;
+    media.hlsSegmentFormat = window.chrome.cast.media.HlsSegmentFormat.TS;
+    media.hlsVideoSegmentFormat = window.chrome.cast.media.HlsVideoSegmentFormat.MPEG2_TS;
+    media.metadata = new window.chrome.cast.media.GenericMediaMetadata();
+    media.metadata.title = `${channel} · ${PLATFORM_NAMES[platform]}`;
+    await session.loadMedia(new window.chrome.cast.media.LoadRequest(media));
+    playerState.casting = session.getCastDevice()?.friendlyName || "your TV";
+  } catch (_) {
+    context.endCurrentSession(true);
+    failNativePlayer(platform);
+    return;
+  }
+  renderPlayer();
+}
+
+// --- Rendering ---
+
+function renderPlayerButtons() {
+  const root = document.documentElement;
+  const hasSource = Boolean(playerState.open && playerState.source);
+  const docked = !root.classList.contains("player-mini"); // the floating player has no toolbar or TV layout
+  root.classList.toggle("player-open", playerState.open && docked);
+  root.classList.toggle("tv-mode", playerState.open && docked && playerState.layout === "side");
+
+  playerToggleEl.innerHTML = playerState.open ? PLAYER_ICONS.hide : PLAYER_ICONS.play;
+  playerToggleEl.title = playerState.open ? "Hide the video" : "Show stream player";
+
+
+  const castable = hasSource && NATIVE_PLATFORMS.includes(playerState.source);
+  const castReady = airplaySupported || (castState.ready && (castState.available || playerState.casting));
+  playerCastEl.classList.toggle("hidden", !castable || !castReady);
+  playerCastEl.classList.toggle("active", Boolean(playerState.casting));
+  playerCastEl.innerHTML = airplaySupported ? PLAYER_ICONS.airplay : PLAYER_ICONS.cast;
+  playerCastEl.title = airplaySupported
+    ? "AirPlay to Apple TV"
+    : playerState.casting ? `Stop casting to ${playerState.casting}` : "Cast to Chromecast";
+
+  playerLayoutEl.classList.toggle("hidden", !playerState.open);
+  playerLayoutEl.innerHTML = playerState.layout === "side" ? PLAYER_ICONS.stack : PLAYER_ICONS.side;
+  playerLayoutEl.title = playerState.layout === "side" ? "Video above the chat" : "Video beside the chat (TV layout)";
+
+  playerFullscreenEl.classList.toggle("hidden", !playerState.open || !fullscreenSupported);
+  playerFullscreenEl.innerHTML = isFullscreen() ? PLAYER_ICONS.exitFullscreen : PLAYER_ICONS.fullscreen;
+  playerFullscreenEl.title = isFullscreen() ? "Exit full screen" : "Full screen";
+}
+
 function renderPlayer() {
   if (!playerPaneEl || isOverlay) return; // no player inside an OBS overlay
-  if (!isPopout && !isExpanded) {
-    // Player only lives in the expanded chat on the main page; drop any playing iframe.
+  const mini = !isPopout && !isExpanded && playerState.open && playerState.mini;
+  document.documentElement.classList.toggle("player-mini", mini);
+  if (!isPopout && !isExpanded && !mini) {
+    // Player only lives in the expanded chat on the main page; drop any playing video.
+    document.documentElement.classList.remove("tv-mode", "player-open");
     playerPaneEl.classList.add("hidden");
     playerSourcesEl.classList.add("hidden");
-    playerFrameEl.innerHTML = "";
+    setPlayerFrame("");
     return;
   }
   const available = PLAYER_PLATFORMS.filter((platform) => playerEmbedSrc(platform) !== null);
@@ -1034,25 +1319,48 @@ function renderPlayer() {
   playerSourcesEl.classList.toggle("hidden", !playerState.open || !available.length);
   playerSourcesEl.innerHTML = available.map((platform) => `
     <button class="player-source${platform === playerState.source ? " active" : ""}" data-platform="${platform}"
-      type="button" title="Watch on ${PLATFORM_NAMES[platform]}">${PLATFORM_SVGS[platform]}</button>
+      type="button" title="Watch on ${PLATFORM_NAMES[platform]}">${PLATFORM_SVGS[platform]}<span class="player-source-name">${PLATFORM_NAMES[platform]}</span></button>
   `).join("");
 
-  playerToggleEl.textContent = playerState.open ? "✕" : "▶";
-  playerToggleEl.title = playerState.open ? "Close stream player" : "Show stream player";
   playerPaneEl.classList.toggle("hidden", !playerState.open);
+  renderPlayerButtons();
 
   if (!playerState.open) {
-    playerFrameEl.innerHTML = ""; // drop the iframe so playback (and audio) stops
+    setPlayerFrame(""); // drop the video so playback (and audio) stops
     return;
   }
+  loadCastSdk();
   if (!playerState.source) {
-    playerFrameEl.innerHTML = `<div class="player-empty">Connect a live Twitch, Kick or YouTube channel to watch the stream here.</div>`;
+    showPlayerMessage("Connect a live Twitch, Kick or YouTube channel to watch the stream here.");
+    return;
+  }
+  if (playerState.casting) {
+    setPlayerFrame(`
+      <div class="player-casting">
+        ${PLAYER_ICONS.cast}
+        <strong>Playing on ${escapeHtml(playerState.casting)}</strong>
+        <span>The chat stays right here.</span>
+        <button class="player-casting-stop" type="button">Stop casting</button>
+      </div>`);
+    return;
+  }
+  if (usesNativePlayer(playerState.source)) {
+    mountNativePlayer(playerState.source);
     return;
   }
   const src = playerEmbedSrc(playerState.source);
   // Reloading the iframe restarts playback (and Twitch pre-rolls) — skip if unchanged.
   if (playerFrameEl.querySelector("iframe")?.src === src) return;
-  playerFrameEl.innerHTML = `<iframe src="${escapeHtml(src)}" allow="autoplay; fullscreen" allowfullscreen></iframe>`;
+  setPlayerFrame(`<iframe src="${escapeHtml(src)}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>`);
+}
+
+function toggleFullscreen() {
+  const root = document.documentElement;
+  if (isFullscreen()) {
+    (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
+  } else {
+    (root.requestFullscreen || root.webkitRequestFullscreen)?.call(root)?.catch?.(() => {});
+  }
 }
 
 if (playerToggleEl) {
@@ -1068,6 +1376,27 @@ if (playerToggleEl) {
     savePlayerState();
     renderPlayer();
   });
+  playerLayoutEl.addEventListener("click", () => {
+    playerState.layout = playerState.layout === "side" ? "stack" : "side";
+    const wasNearBottom = isNearBottom();
+    savePlayerState();
+    renderPlayer();
+    if (wasNearBottom) requestAnimationFrame(() => { feedEl.scrollTop = feedEl.scrollHeight; });
+  });
+  playerCastEl.addEventListener("click", () => {
+    if (airplaySupported) {
+      startAirPlay();
+    } else if (castState.ready) {
+      startChromecast();
+    }
+  });
+  playerFrameEl.addEventListener("click", (event) => {
+    if (event.target.closest(".player-casting-stop")) startChromecast();
+  });
+  playerFullscreenEl.addEventListener("click", toggleFullscreen);
+  for (const type of ["fullscreenchange", "webkitfullscreenchange"]) {
+    document.addEventListener(type, renderPlayerButtons);
+  }
 }
 
 // Alert sounds: hidden alert-overlay iframes in the popout and expanded chat; URLs stay in the browser.
