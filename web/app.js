@@ -1514,7 +1514,9 @@ function renderPlayerButtons() {
   playerToggleEl.title = playerState.open ? "Hide the video" : "Show stream player";
 
 
-  playerSoundEl.classList.toggle("hidden", !hasSource || Boolean(playerState.casting));
+  // Only Kick's embed hides its own mute control; every other player (incl. our native one) has one.
+  const needsSoundButton = hasSource && playerState.source === "kick" && !usesNativePlayer("kick") && !playerState.casting;
+  playerSoundEl.classList.toggle("hidden", !needsSoundButton);
   playerSoundEl.classList.toggle("muted", !playerState.sound);
   playerSoundEl.innerHTML = playerState.sound ? PLAYER_ICONS.sound : `${PLAYER_ICONS.muted}<span>Unmute</span>`;
   playerSoundEl.title = playerState.sound ? "Mute the stream" : "Turn the stream sound on";
