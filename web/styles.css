@@ -1610,6 +1610,23 @@ html.expand-mode .player-controls {
     will-change: transform;
 }
 
+.expand-exit {
+    border-color: rgba(255, 123, 123, 0.4);
+    color: var(--danger);
+}
+
+.expand-exit:hover {
+    background: rgba(255, 59, 48, 0.25);
+}
+
+/* --- Expand + video buttons (feed header) --- */
+
+.feed-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
 #expand-toggle {
     gap: 7px;
 }
@@ -1619,8 +1636,11 @@ html.expand-mode .player-controls {
     width: auto;
 }
 
-.expand-exit {
-    border-color: rgba(255, 123, 123, 0.4);
+.watch-button svg {
+    height: 15px;
+    width: auto;
+}
+
 /* --- TV layout: video fills the left, chat sits in a column on the right ---
    Narrow windows (phones, popouts) keep the stacked layout. */
 
@@ -1738,10 +1758,145 @@ html.expand-mode .player-controls {
     html.tv-mode .message-card[data-platform="tiktok"] { --platform-accent: rgba(37, 244, 238, 0.65); }
 }
 
+/* --- Player toolbar: flat icon buttons; compact on phones --- */
+
+html.player-open .player-controls {
+    gap: 6px;
+    min-height: 44px;
+    padding: 5px 8px;
+}
+
+html.player-open .player-media-controls,
+html.player-open .player-window-controls {
+    gap: 2px;
+}
+
+html.player-open .player-toggle,
+html.player-open .player-source {
+    border-color: transparent;
+    background: none;
+    color: var(--muted);
+}
+
+html.player-open .player-toggle:hover,
+html.player-open .player-source:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text);
+}
+
+html.player-open .player-source.active {
+    color: var(--text);
+    border-color: transparent;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+html.player-open .expand-exit {
     color: var(--danger);
 }
 
-.expand-exit:hover {
-    background: rgba(255, 59, 48, 0.25);
+@media (max-width: 639px) {
+    html.player-open .player-controls {
+        min-height: 38px;
+        padding: 3px 4px;
+    }
+
+    html.player-open .player-toggle,
+    html.player-open .player-source {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+    }
+
+    html.player-open .player-toggle svg {
+        width: 15px;
+        height: 15px;
+    }
+
+    html.player-open .player-source svg,
+    html.player-open .player-source img {
+        height: 14px;
+    }
+
+    html.player-open .viewer-badge {
+        font-size: 0.78rem;
+        padding: 2px;
+    }
 }
 
+/* --- Floating player (phones): the video keeps playing after swiping out of the full window --- */
+
+.player-mini-bar {
+    display: none;
+}
+
+html.player-mini .player-pane {
+    position: fixed;
+    z-index: 120;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    width: min(58vw, 340px);
+    overflow: hidden;
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6);
+}
+
+html.player-mini .player-frame iframe,
+html.player-mini .player-frame video,
+html.player-mini .player-casting {
+    width: 100%;
+    margin: 0;
+}
+
+html.player-mini .player-mini-bar {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    z-index: 2;
+    display: flex;
+    gap: 6px;
+}
+
+.player-mini-bar button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.player-mini-bar svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* Swipe layer over the top of an embedded video (touch devices, full window only). */
+.player-pane {
+    position: relative;
+}
+
+.player-swipe-zone {
+    display: none;
+}
+
+html.touch-swipe.expand-mode.player-open .player-swipe-zone {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1;
+    display: block;
+    height: 60%;
+}
+
+html.touch-swipe .player-swipe-zone.pass,
+.player-pane:has(video.native-player) .player-swipe-zone {
+    display: none !important;
+}

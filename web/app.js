@@ -797,6 +797,7 @@ if (clearBtn) {
 }
 
 const expandToggleBtn = document.getElementById("expand-toggle");
+const watchToggleBtn = document.getElementById("watch-toggle");
 const feedPanelEl = document.querySelector(".feed-panel");
 const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 let expandAnimCleanup = null;
@@ -809,6 +810,7 @@ function mainAlertUrls() {
 
 function setExpanded(on, { animate = true } = {}) {
   if (isPopout || on === isExpanded) return;
+  if (on) playerState.mini = false;
   const firstRect = feedPanelEl.getBoundingClientRect();
   const wasNearBottom = isNearBottom();
   isExpanded = on;
@@ -865,6 +867,16 @@ function playExpandTransition(firstRect) {
 
 if (expandToggleBtn) {
   expandToggleBtn.addEventListener("click", () => setExpanded(true));
+  // Video button: the same expanded view, with the stream player already open.
+  watchToggleBtn.addEventListener("click", () => {
+    playerState.open = true;
+    savePlayerState();
+    if (isExpanded) {
+      renderPlayer();
+    } else {
+      setExpanded(true);
+    }
+  });
   document.getElementById("expand-exit").addEventListener("click", () => setExpanded(false));
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || !isExpanded) return;
@@ -1361,6 +1373,126 @@ function toggleFullscreen() {
   } else {
     (root.requestFullscreen || root.webkitRequestFullscreen)?.call(root)?.catch?.(() => {});
   }
+}
+
+// Phones: pull down on the toolbar (or on the chat when it's scrolled to the top) to leave
+// the full window; the video keeps playing in a floating corner player. Touch-only, so
+// desktop is untouched.
+const coarsePointer = window.matchMedia("(pointer: coarse)");
+const SWIPE_CLOSE_PX = 90;
+const appShellEl = document.querySelector(".app-shell");
+let swipe = null;
+
+function resetSwipeVisual() {
+  appShellEl.style.transition = "transform 200ms ease, opacity 200ms ease";
+  appShellEl.style.transform = "";
+  appShellEl.style.opacity = "";
+  setTimeout(() => { appShellEl.style.transition = ""; }, 220);
+}
+
+// Embedded players (cross-origin iframes) swallow touches, so a transparent layer over the
+// top of the video catches the swipe; the bottom strip, where the player's own buttons are,
+// stays free. A plain tap on the layer steps it aside for a few seconds so the next taps
+// reach the player. Our own <video> passes touches through, so it needs no layer.
+const SWIPE_ZONE_PASS_MS = 4000;
+let swipeZoneEl = null;
+
+if (!isPopout && playerPaneEl) {
+  swipeZoneEl = document.createElement("div");
+  swipeZoneEl.className = "player-swipe-zone";
+  playerPaneEl.appendChild(swipeZoneEl);
+  const syncTouch = () => document.documentElement.classList.toggle("touch-swipe", coarsePointer.matches);
+  syncTouch();
+  coarsePointer.addEventListener?.("change", syncTouch);
+}
+
+if (!isPopout && appShellEl) {
+  document.addEventListener("touchstart", (event) => {
+    swipe = null;
+    if (!isExpanded || !coarsePointer.matches || event.touches.length !== 1) return;
+    const zone = event.target.closest(".player-controls, .feed, .player-swipe-zone, video.native-player");
+    if (!zone || (zone === feedEl && feedEl.scrollTop > 0)) return;
+    swipe = { x: event.touches[0].clientX, y: event.touches[0].clientY, dy: 0, zone, moved: false };
+  }, { passive: true });
+
+  document.addEventListener("touchmove", (event) => {
+    if (!swipe) return;
+    const dy = event.touches[0].clientY - swipe.y;
+    const dx = event.touches[0].clientX - swipe.x;
+    if (Math.abs(dx) > 6 || Math.abs(dy) > 6) swipe.moved = true;
+    if (dy < 0 || Math.abs(dx) > dy) { // scrolling up or sideways: not a close gesture
+      if (swipe.dy) resetSwipeVisual();
+      swipe = dy < -8 || Math.abs(dx) > 24 ? null : swipe;
+      return;
+    }
+    swipe.dy = dy;
+    appShellEl.style.transform = `translateY(${dy * 0.55}px)`;
+    appShellEl.style.opacity = String(1 - Math.min(dy / 700, 0.35));
+  }, { passive: true });
+
+  document.addEventListener("touchend", () => {
+    if (!swipe) return;
+    const close = swipe.dy > SWIPE_CLOSE_PX;
+    if (swipe.zone === swipeZoneEl && !swipe.moved) {
+      // A tap, not a swipe: let the next taps through to the player.
+      swipeZoneEl.classList.add("pass");
+      setTimeout(() => swipeZoneEl.classList.remove("pass"), SWIPE_ZONE_PASS_MS);
+    }
+    swipe = null;
+    if (!close) {
+      resetSwipeVisual();
+      return;
+    }
+    // Measure the video where the finger left it, then drop the drag offset instantly:
+    // a transformed ancestor would also offset the fixed-position floating player.
+    const from = playerState.open ? playerPaneEl.getBoundingClientRect() : null;
+    appShellEl.style.transition = "";
+    appShellEl.style.transform = "";
+    appShellEl.style.opacity = "";
+    playerState.mini = playerState.open;
+    setExpanded(false, { animate: false });
+    if (prefersReducedMotion) return;
+    if (from && playerState.mini) flyToMiniPlayer(from);
+    appShellEl.querySelector(".layout-grid")?.animate(
+      [{ opacity: 0 }, { opacity: 1 }], { duration: 380, easing: "ease-out" }
+    );
+  });
+}
+
+// The video drops down first, then glides into the corner as it shrinks.
+function flyToMiniPlayer(from) {
+  const to = playerPaneEl.getBoundingClientRect();
+  if (!to.width || !to.height) return;
+  const dx = from.left - to.left;
+  const dy = from.top - to.top;
+  const sx = from.width / to.width;
+  const sy = from.height / to.height;
+  // x/y/s: how far along the horizontal move, vertical move and shrink each keyframe is.
+  const at = (x, y, s) => `translate(${dx * (1 - x)}px, ${dy * (1 - y)}px) scale(${sx + (1 - sx) * s}, ${sy + (1 - sy) * s})`;
+  playerPaneEl.style.transformOrigin = "top left";
+  playerPaneEl.animate([
+    { transform: at(0, 0, 0), borderRadius: "0px" },
+    { transform: at(0.12, 0.6, 0.4), offset: 0.4 },
+    { transform: "none", borderRadius: "12px" },
+  ], { duration: 620, easing: "cubic-bezier(0.4, 0, 0.2, 1)" }).finished.then(
+    () => { playerPaneEl.style.transformOrigin = ""; },
+    () => {}
+  );
+}
+
+// Floating player controls: back to the full window, or stop the video.
+if (!isPopout && playerPaneEl) {
+  const miniBar = document.createElement("div");
+  miniBar.className = "player-mini-bar";
+  miniBar.innerHTML = `
+    <button class="player-mini-expand" type="button" title="Back to full window">${PLAYER_ICONS.fullscreen}</button>
+    <button class="player-mini-close" type="button" title="Close video">&#x2715;</button>`;
+  playerPaneEl.appendChild(miniBar);
+  miniBar.querySelector(".player-mini-expand").addEventListener("click", () => setExpanded(true));
+  miniBar.querySelector(".player-mini-close").addEventListener("click", () => {
+    playerState.mini = false;
+    renderPlayer();
+  });
 }
 
 if (playerToggleEl) {
