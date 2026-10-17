@@ -1758,6 +1758,75 @@ html.expand-mode .player-controls {
     html.tv-mode .message-card[data-platform="tiktok"] { --platform-accent: rgba(37, 244, 238, 0.65); }
 }
 
+/* --- Combined viewer badge --- */
+
+.feed-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.viewer-badge {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 4px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.viewer-badge:hover {
+    color: var(--text);
+}
+
+.viewer-badge.hidden {
+    display: none;
+}
+
+.viewer-badge > svg {
+    width: 15px;
+    height: 15px;
+}
+
+/* Tap the count for the per-platform split. */
+.viewer-breakdown {
+    display: none;
+    align-items: center;
+    gap: 9px;
+    margin-left: 4px;
+}
+
+.viewer-badge.open .viewer-breakdown {
+    display: inline-flex;
+}
+
+.viewer-breakdown span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.viewer-breakdown svg,
+.viewer-breakdown img {
+    height: 12px;
+    width: auto;
+}
+
+/* A crowded toolbar scrolls sideways instead of pushing the buttons off-screen. */
+html.player-open .player-media-controls {
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
 /* --- Player toolbar: flat icon buttons; compact on phones --- */
 
 html.player-open .player-controls {

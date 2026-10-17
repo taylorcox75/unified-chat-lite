@@ -28,6 +28,7 @@ document.documentElement.classList.toggle("expand-mode", isExpanded);
 const state = {
   messages: [],
   statuses: new Map(),
+  viewers: new Map(), // platform -> live viewer count
   filters: {
     twitch: true,
     youtube: true,
@@ -580,6 +581,44 @@ function renderStatuses() {
   `).join("");
 }
 
+// Combined viewer badge: live viewers summed across platforms; tap for the per-platform split.
+const VIEWER_PLATFORMS = ["twitch", "youtube", "kick", "tiktok"];
+const compactNumber = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+const VIEWERS_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0 2c-3.3 0-7 1.6-7 4.5V20h14v-2.5C16 14.6 12.3 13 9 13zm7.5-2a3.5 3.5 0 1 0-1.2-6.8 6 6 0 0 1 0 6.6c.4.1.8.2 1.2.2zm1.4 2.1A5.6 5.6 0 0 1 18 17.5V20h4v-2.2c0-2.3-2.1-4-4.1-4.7z"/></svg>`;
+let viewerBreakdownOpen = false;
+
+function setViewers(platform, count) {
+  if (typeof count === "number") {
+    state.viewers.set(platform, count);
+  } else {
+    state.viewers.delete(platform);
+  }
+  renderViewerBadges();
+}
+
+function renderViewerBadges() {
+  const entries = VIEWER_PLATFORMS.filter((p) => state.viewers.has(p)).map((p) => [p, state.viewers.get(p)]);
+  const total = entries.reduce((sum, [, count]) => sum + count, 0);
+  const html = entries.length ? `
+    ${VIEWERS_SVG}<span>${total < 10000 ? total.toLocaleString() : compactNumber.format(total)}</span>
+    <span class="viewer-breakdown">${entries.map(([p, count]) =>
+      `<span>${PLATFORM_SVGS[p]}${compactNumber.format(count)}</span>`).join("")}</span>` : "";
+  const title = entries.map(([p, count]) => `${PLATFORM_NAMES[p]}: ${count.toLocaleString()}`).join(" · ");
+  for (const badge of document.querySelectorAll(".viewer-badge")) {
+    badge.classList.toggle("hidden", !entries.length);
+    badge.classList.toggle("open", viewerBreakdownOpen);
+    badge.innerHTML = html;
+    badge.title = `${total.toLocaleString()} viewers — ${title}`;
+    badge.setAttribute("aria-label", badge.title);
+  }
+}
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest(".viewer-badge")) return;
+  viewerBreakdownOpen = !viewerBreakdownOpen;
+  renderViewerBadges();
+});
+
 // Hub connection: subscribe and render; the server fans out per-channel events.
 class HubConnection {
   constructor() {
@@ -652,6 +691,11 @@ class HubConnection {
         merged.sort((a, b) => a.timestamp - b.timestamp);
         state.messages = merged.slice(-MAX_VISIBLE_MESSAGES);
         state.statuses.clear();
+        state.viewers.clear();
+        for (const entry of payload.viewers || []) {
+          state.viewers.set(entry.platform, entry.count);
+        }
+        renderViewerBadges();
         for (const status of payload.statuses) {
           setStatus(status.platform, status.dot, status.state, status.detail, status.video_id);
         }
@@ -667,6 +711,9 @@ class HubConnection {
         break;
       case "status":
         setStatus(payload.status.platform, payload.status.dot, payload.status.state, payload.status.detail, payload.status.video_id);
+        break;
+      case "viewers":
+        setViewers(payload.platform, payload.count);
         break;
       case "emotes":
         thirdPartyEmotes.set(payload.platform || "twitch", new Map(Object.entries(payload.emotes || {})));

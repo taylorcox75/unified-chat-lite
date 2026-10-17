@@ -15,7 +15,7 @@ from .connectors.kick import KickChat
 from .connectors.tiktok import TikTokChat
 from .connectors.twitch import TwitchChat
 from .connectors.youtube import YouTubeChat
-from . import airplay, streams
+from . import airplay, streams, viewercounts
 from .hub import Hub, Viewer
 from .stats import Stats
 
@@ -55,7 +55,8 @@ async def start_stats_autosave() -> None:
 
 
 @app.on_event("startup")
-async def start_airplay_reaper() -> None:
+async def start_viewer_counts() -> None:
+    asyncio.create_task(viewercounts.run(hub))
     asyncio.create_task(airplay_chat.reap())
 
 
