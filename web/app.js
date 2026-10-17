@@ -1368,14 +1368,28 @@ function mountNativePlayer(platform) {
   });
   if (airplaySupported) {
     video.textTracks.addEventListener("addtrack", () => syncChatCaptions(video));
+    // iOS can report "not wireless" for a moment while the TV connection is set up, so
+    // captions switch on at once but only switch off once AirPlay has stayed off.
+    let captionsOffTimer = null;
     video.addEventListener("webkitcurrentplaybacktargetiswirelesschanged", () => {
-      playerState.captions = Boolean(video.webkitCurrentPlaybackTargetIsWireless);
-      setNativeSource(video, platform);
-      syncChatCaptions(video);
+      clearTimeout(captionsOffTimer);
+      if (video.webkitCurrentPlaybackTargetIsWireless) {
+        playerState.captions = true;
+        setNativeSource(video, platform);
+        syncChatCaptions(video);
+        return;
+      }
+      captionsOffTimer = setTimeout(() => {
+        if (!video.isConnected || video.webkitCurrentPlaybackTargetIsWireless) return;
+        playerState.captions = false;
+        setNativeSource(video, platform);
+      }, CAPTIONS_OFF_DELAY_MS);
     });
   }
   setNativeSource(video, platform);
 }
+
+const CAPTIONS_OFF_DELAY_MS = 3000;
 
 // The TV captions honour the filter chips: tell the server which platforms are hidden.
 function syncCaptionFilters() {
