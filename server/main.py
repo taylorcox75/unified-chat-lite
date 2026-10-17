@@ -40,6 +40,19 @@ announcement = {"text": ""}
 viewers: set[Viewer] = set()
 
 app = FastAPI(title="Unified Chat Lite")
+
+# Pages, scripts and styles must be re-checked on every load, or browsers keep
+# running a stale app.js after an update; the ETag makes unchanged ones a 304.
+NO_CACHE_SUFFIXES = (".html", ".js", ".css", ".json")
+
+
+@app.middleware("http")
+async def revalidate_app_files(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if (path.endswith("/") or path.endswith(NO_CACHE_SUFFIXES) or path in ("/popout", "/overlay")) and "cache-control" not in response.headers:
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 stats = Stats()
 hub = Hub()
 hub.register_connector("twitch", TwitchChat(hub))
@@ -181,6 +194,18 @@ async def airplay_chat_playlist(platform: str, channel: str, chat: str) -> Plain
 async def airplay_chat_segment(platform: str, channel: str, chat: str, sequence: int) -> PlainTextResponse:
     session = await _airplay_session(platform, channel, chat)
     return _playlist_response(await airplay_chat.chat_segment(session, sequence), "text/vtt")
+
+
+@app.post("/airplay/{platform}/{channel}/{chat}/filters")
+async def airplay_filters(platform: str, channel: str, chat: str, request: Request) -> dict:
+    """The phone's filter chips: platforms to leave out of the TV captions."""
+    session = await _airplay_session(platform, channel, chat)
+    try:
+        hidden = (await request.json()).get("hidden") or []
+    except Exception:
+        raise HTTPException(status_code=400)
+    session.hidden_platforms = {p for p in hidden if p in SUPPORTED_PLATFORMS}
+    return {"hidden": sorted(session.hidden_platforms)}
 
 
 @app.get("/health")

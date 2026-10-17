@@ -255,6 +255,33 @@ h2 {
     background: rgba(115, 240, 168, 0.12);
 }
 
+.connect-button.connected {
+    border-color: rgba(115, 240, 168, 0.5);
+    background: rgba(115, 240, 168, 0.14);
+    font-weight: 600;
+}
+
+.connect-button .connect-off {
+    display: none;
+}
+
+/* Hover hints what a click does; on touch, a tap simply disconnects. */
+@media (hover: hover) {
+    .connect-button.connected:hover {
+        border-color: rgba(255, 123, 123, 0.45);
+        background: rgba(255, 59, 48, 0.12);
+        color: var(--danger);
+    }
+
+    .connect-button.connected:hover .connect-live {
+        display: none;
+    }
+
+    .connect-button.connected:hover .connect-off {
+        display: inline;
+    }
+}
+
 .input-field {
     width: 100%;
     border-radius: 9px;
@@ -1880,6 +1907,23 @@ html.player-open .player-source.active {
     background: rgba(255, 255, 255, 0.08);
 }
 
+/* Muted is the default, so the way out of it is a labelled pill, not a bare icon. */
+html.player-open .player-sound.muted {
+    width: auto;
+    gap: 6px;
+    padding: 0 12px 0 9px;
+    border-color: transparent;
+    background: rgba(255, 209, 102, 0.12);
+    color: var(--warn);
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+html.player-open .player-sound.muted:hover {
+    background: rgba(255, 209, 102, 0.2);
+}
+
 html.player-open .expand-exit {
     color: var(--danger);
 }
@@ -1905,6 +1949,16 @@ html.player-open .expand-exit {
     html.player-open .player-source svg,
     html.player-open .player-source img {
         height: 14px;
+    }
+
+    /* Icon-only Unmute on phones; the yellow tint still marks it. */
+    html.player-open .player-sound.muted {
+        width: 30px;
+        padding: 0;
+    }
+
+    html.player-open .player-sound.muted span {
+        display: none;
     }
 
     html.player-open .viewer-badge {

@@ -162,6 +162,20 @@ function rgbToHex(rgb) {
   return `#${((rgb.r << 16) | (rgb.g << 8) | rgb.b).toString(16).padStart(6, "0")}`;
 }
 
+// YouTube and TikTok send no name colours: give each name a stable one from
+// Twitch's default palette so every author stands out the same way.
+const DEFAULT_NAME_COLORS = [
+  "#FF0000", "#0000FF", "#008000", "#B22222", "#FF7F50", "#9ACD32", "#FF4500", "#2E8B57",
+  "#DAA520", "#D2691E", "#5F9EA0", "#1E90FF", "#FF69B4", "#8A2BE2", "#00FF7F",
+];
+
+function nameColor(message) {
+  if (message.color) return message.color;
+  let hash = 0;
+  for (const char of String(message.author || "")) hash = (hash * 31 + char.codePointAt(0)) >>> 0;
+  return DEFAULT_NAME_COLORS[hash % DEFAULT_NAME_COLORS.length];
+}
+
 function ensureReadableColor(value) {
   const color = parseHexColor(value);
   if (!color || !AUTHOR_COLOR_BG_RGB) return "";
@@ -296,7 +310,7 @@ function cheermoteMarkup(word) {
 
 // "<gem> Name cheered 1,000 bits:" / "<bolt> Name gigantified an emote:" ahead of the user's message.
 function paidNoticeMarkup(message) {
-  const color = ensureReadableColor(message.color);
+  const color = ensureReadableColor(nameColor(message));
   const author = `<span class="author-name"${color ? ` style="color:${color}"` : ""}>${escapeHtml(message.author)}</span>`;
   const colon = message.text ? ":" : "";
   if (message.bits > 0) {
@@ -461,15 +475,46 @@ if (syncChannel) {
   });
 }
 
+// Busy chats deliver dozens of messages a second; rebuilding the whole feed for each
+// one froze the page. New messages are batched per frame and appended instead.
+let pendingMessages = [];
+let flushQueued = false;
+
 function addMessage(message) {
-  const wasNearBottom = isNearBottom();
   state.messages.push(message);
   if (state.messages.length > MAX_VISIBLE_MESSAGES) {
     state.messages = state.messages.slice(-MAX_VISIBLE_MESSAGES);
   }
-  renderMessages();
+  pendingMessages.push(message);
+  if (!flushQueued) {
+    flushQueued = true;
+    requestAnimationFrame(flushPendingMessages);
+  }
+}
+
+function flushPendingMessages() {
+  flushQueued = false;
+  const batch = pendingMessages.slice(-MAX_VISIBLE_MESSAGES)
+    .filter((message) => state.filters[message.platform] !== false);
+  pendingMessages = [];
+  if (!batch.length) return;
+  const wasNearBottom = isNearBottom();
+  // Reading further up: pin the first visible card so dropping old ones doesn't move it.
+  let anchor = null;
+  let anchorTop = 0;
   if (!wasNearBottom) {
-    unseenCount += 1;
+    const feedTop = feedEl.getBoundingClientRect().top;
+    anchor = Array.from(feedEl.children).find((card) => card.getBoundingClientRect().bottom > feedTop) || null;
+    anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+  }
+  feedEl.querySelector(".empty-state")?.remove();
+  feedEl.insertAdjacentHTML("beforeend", batch.map(messageMarkup).join(""));
+  while (feedEl.children.length > MAX_VISIBLE_MESSAGES) feedEl.firstElementChild.remove();
+  if (wasNearBottom) {
+    feedEl.scrollTop = feedEl.scrollHeight;
+  } else {
+    if (anchor?.isConnected) feedEl.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    unseenCount += batch.length;
     updateScrollButton();
   }
 }
@@ -494,6 +539,7 @@ function overlayFadeStyle(message) {
 }
 
 function renderMessages() {
+  pendingMessages = []; // a full render already includes them
   const visibleMessages = state.messages.filter((message) => state.filters[message.platform] !== false);
 
   if (!visibleMessages.length) {
@@ -503,36 +549,38 @@ function renderMessages() {
 
   const wasNearBottom = isNearBottom();
 
-  feedEl.innerHTML = visibleMessages.map((message) => {
-    let messageClass = message.deleted ? "message-card deleted" : "message-card";
-    if (highlightMentions && message.kind !== "system" && mentionRegex?.test(message.text)) {
-      messageClass += " mention";
-    }
-    if (message.kind === "system") {
-      const paid = message.bits > 0 || Boolean(message.notice);
-      const body = message.text
-        ? `<span class="message-text${paid ? "" : " system-notice-text"}">${renderMessageText(message.text, message.emotes, message.platform, message.bits)}</span>`
-        : "";
-      return `
-        <article class="${messageClass} system-notice${paid ? " paid-notice" : ""}" data-platform="${message.platform}"${overlayFadeStyle(message)}>
-          <span class="message-topline"><span class="message-time">${formatTime(message.timestamp)}</span> ${showPlatform ? platformMarkup(message.platform) : ""}${sourceAvatarMarkup(message)}${paid ? `${paidNoticeMarkup(message)} ` : ""}${body}</span>
-        </article>
-      `;
-    }
-    const readableColor = ensureReadableColor(message.color);
-    const authorStyle = readableColor ? `style="color:${readableColor}"` : "";
-    return `
-      <article class="${messageClass}" data-platform="${message.platform}"${overlayFadeStyle(message)}>
-        <span class="message-topline"><span class="message-time">${formatTime(message.timestamp)}</span> ${showPlatform ? platformMarkup(message.platform) : ""}${sourceAvatarMarkup(message)}${badgesMarkup(message)}<span class="author-name" ${authorStyle}>${escapeHtml(message.author)}:</span> <span class="message-text">${renderMessageText(message.text, message.emotes, message.platform, message.bits)}</span></span>
-      </article>
-    `;
-  }).join("");
+  feedEl.innerHTML = visibleMessages.map(messageMarkup).join("");
 
   requestAnimationFrame(() => {
     if (wasNearBottom) {
       feedEl.scrollTop = feedEl.scrollHeight;
     }
   });
+}
+
+function messageMarkup(message) {
+  let messageClass = message.deleted ? "message-card deleted" : "message-card";
+  if (highlightMentions && message.kind !== "system" && mentionRegex?.test(message.text)) {
+    messageClass += " mention";
+  }
+  if (message.kind === "system") {
+    const paid = message.bits > 0 || Boolean(message.notice);
+    const body = message.text
+      ? `<span class="message-text${paid ? "" : " system-notice-text"}">${renderMessageText(message.text, message.emotes, message.platform, message.bits)}</span>`
+      : "";
+    return `
+      <article class="${messageClass} system-notice${paid ? " paid-notice" : ""}" data-platform="${message.platform}"${overlayFadeStyle(message)}>
+        <span class="message-topline"><span class="message-time">${formatTime(message.timestamp)}</span> ${showPlatform ? platformMarkup(message.platform) : ""}${sourceAvatarMarkup(message)}${paid ? `${paidNoticeMarkup(message)} ` : ""}${body}</span>
+      </article>
+    `;
+  }
+  const readableColor = ensureReadableColor(nameColor(message));
+  const authorStyle = readableColor ? `style="color:${readableColor}"` : "";
+  return `
+    <article class="${messageClass}" data-platform="${message.platform}"${overlayFadeStyle(message)}>
+      <span class="message-topline"><span class="message-time">${formatTime(message.timestamp)}</span> ${showPlatform ? platformMarkup(message.platform) : ""}${sourceAvatarMarkup(message)}${badgesMarkup(message)}<span class="author-name" ${authorStyle}>${escapeHtml(message.author)}:</span> <span class="message-text">${renderMessageText(message.text, message.emotes, message.platform, message.bits)}</span></span>
+    </article>
+  `;
 }
 
 function isNearBottom() {
@@ -813,6 +861,8 @@ function connectFromInputs({ updateUrl = true } = {}) {
   const hasAny = Object.values(channels).some(Boolean);
   if (!hasAny && !hubConnection.socket) return;
   hubConnection.setChannels(channels);
+  connectedChannels = channels;
+  updateConnectButton();
   updateClearButtons(channels);
   updateMentionRegex(channels);
   resetHypeTrainBar();
@@ -836,6 +886,42 @@ function connectFromInputs({ updateUrl = true } = {}) {
   }
 }
 
+// "Connected" while the inputs match what's live; any edit turns it back into "Connect".
+const connectButtonEl = channelsFormEl?.querySelector(".connect-button");
+let connectedChannels = null;
+
+function updateConnectButton() {
+  if (!connectButtonEl) return;
+  const live = Boolean(connectedChannels) && PLATFORMS.some((p) => connectedChannels[p])
+    && PLATFORMS.every((p) => channelInputs[p].value.trim() === connectedChannels[p]);
+  connectButtonEl.classList.toggle("connected", live);
+  connectButtonEl.innerHTML = live
+    ? `<span class="connect-live">✓ Connected</span><span class="connect-off">Disconnect</span>`
+    : "Connect";
+  connectButtonEl.title = live ? "Disconnect all channels" : "";
+}
+
+// Tapping "Connected" disconnects everything; the names stay in the inputs to reconnect.
+function disconnectAll() {
+  const channels = Object.fromEntries(PLATFORMS.map((p) => [p, ""]));
+  hubConnection.setChannels(channels);
+  connectedChannels = null;
+  updateConnectButton();
+  updateClearButtons(channels);
+  updateMentionRegex(channels);
+  resetHypeTrainBar();
+  playerState.channels = channels;
+  renderPlayer();
+  broadcast({ type: "channels", channels });
+  try {
+    window.localStorage.setItem("channels", JSON.stringify(channels));
+  } catch (_) {}
+  const params = new URLSearchParams(window.location.search);
+  for (const platform of PLATFORMS) params.delete(platform);
+  const query = params.toString();
+  window.history.replaceState(null, "", query ? `?${query}` : window.location.pathname);
+}
+
 function updateClearButtons(channels) {
   for (const platform of PLATFORMS) {
     channelClears[platform]?.classList.toggle("hidden", !channels[platform]);
@@ -845,7 +931,11 @@ function updateClearButtons(channels) {
 if (channelsFormEl) {
   channelsFormEl.addEventListener("submit", (event) => {
     event.preventDefault();
-    connectFromInputs();
+    if (event.submitter === connectButtonEl && connectButtonEl.classList.contains("connected")) {
+      disconnectAll();
+    } else {
+      connectFromInputs();
+    }
   });
   for (const [platform, button] of Object.entries(channelClears)) {
     button?.addEventListener("click", () => {
@@ -855,6 +945,7 @@ if (channelsFormEl) {
   }
 
   for (const input of Object.values(channelInputs)) {
+    input?.addEventListener("input", updateConnectButton);
     input?.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -870,6 +961,7 @@ document.querySelectorAll(".filter-button[data-platform]").forEach((button) => {
     state.filters[platform] = !state.filters[platform];
     button.classList.toggle("active", state.filters[platform]);
     renderMessages();
+    syncCaptionFilters();
   });
 });
 
@@ -1105,6 +1197,8 @@ function playerEmbedSrc(platform) {
 const PLAYER_ICONS = {
   play: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>`,
   hide: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 16v1a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m4 0h4a2 2 0 0 1 2 2v3.34l1 1L22 7v10M2 2l20 20"/></svg>`,
+  muted: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 9l5 6m0-6l-5 6"/></svg>`,
+  sound: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>`,
   cast: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6M2 12a8 8 0 0 1 8 8M2 16a4 4 0 0 1 4 4"/><circle cx="2.5" cy="19.5" r="1.2" fill="currentColor"/></svg>`,
   airplay: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M6 17H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2"/><path fill="currentColor" d="M12 14l5 7H7z"/></svg>`,
   side: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path fill="currentColor" d="M15 5h6v14h-6z" opacity=".55"/></svg>`,
@@ -1117,16 +1211,19 @@ const playerPaneEl = document.getElementById("player-pane");
 const playerFrameEl = document.getElementById("player-frame");
 const playerToggleEl = document.getElementById("player-toggle");
 const playerSourcesEl = document.getElementById("player-sources");
+const playerSoundEl = document.getElementById("player-sound");
 const playerCastEl = document.getElementById("player-cast");
 const playerLayoutEl = document.getElementById("player-layout");
 const playerFullscreenEl = document.getElementById("player-fullscreen");
 
-// sound: follows the native player's own mute control, so a source switch keeps it; embeds start muted.
+// sound: set by the Unmute button (and the native player's own mute control); embeds start muted.
 // native: the user picked AirPlay/Chromecast, so Twitch/Kick play in our own <video>.
 // casting: Chromecast device name while a cast session is running.
 // mini: the video kept playing in a floating corner player after a swipe out of the full window (phones).
+// captions: AirPlay is (about to be) active, so the native player takes the captioned playlist.
 const playerState = {
-  open: false, source: null, layout: null, sound: false, native: false, casting: null, mini: false, channels: {},
+  open: false, source: null, layout: null, sound: false, native: false, casting: null, mini: false,
+  captions: false, channels: {},
 };
 try {
   const stored = JSON.parse(window.localStorage.getItem(PLAYER_STORAGE_KEY) || "{}");
@@ -1270,21 +1367,43 @@ function mountNativePlayer(platform) {
     if (video.isConnected && !activeHls) failNativePlayer(platform);
   });
   if (airplaySupported) {
-    const sync = () => syncChatCaptions(video);
-    video.textTracks.addEventListener("addtrack", sync);
-    video.addEventListener("webkitcurrentplaybacktargetiswirelesschanged", sync);
-    video.src = airplayMasterUrl(platform);
+    video.textTracks.addEventListener("addtrack", () => syncChatCaptions(video));
+    video.addEventListener("webkitcurrentplaybacktargetiswirelesschanged", () => {
+      playerState.captions = Boolean(video.webkitCurrentPlaybackTargetIsWireless);
+      setNativeSource(video, platform);
+      syncChatCaptions(video);
+    });
+  }
+  setNativeSource(video, platform);
+}
+
+// The TV captions honour the filter chips: tell the server which platforms are hidden.
+function syncCaptionFilters() {
+  if (!airplaySupported || !playerState.captions || !NATIVE_PLATFORMS.includes(playerState.source)) return;
+  const url = airplayMasterUrl(playerState.source).replace(/master\.m3u8$/, "filters");
+  const hidden = PLATFORMS.filter((platform) => state.filters[platform] === false);
+  fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hidden }) })
+    .catch(() => {});
+}
+
+// The captioned playlist (the server's live chat track) is only used while AirPlaying;
+// everywhere else the player takes the plain stream, so the server builds no captions.
+function setNativeSource(video, platform) {
+  if (airplaySupported && playerState.captions) {
+    const url = airplayMasterUrl(platform);
+    if (video.src !== url) video.src = url;
+    syncCaptionFilters();
     return;
   }
-  const url = cachedStreamUrl(platform);
-  if (url) {
-    attachStream(video, url, platform);
-  } else {
-    fetchStreamUrl(platform).then(
-      (resolved) => video.isConnected && attachStream(video, resolved, platform),
-      () => video.isConnected && failNativePlayer(platform)
-    );
+  const cached = cachedStreamUrl(platform);
+  if (cached) {
+    if (video.src !== cached) attachStream(video, cached, platform);
+    return;
   }
+  fetchStreamUrl(platform).then(
+    (url) => video.isConnected && !playerState.captions && video.src !== url && attachStream(video, url, platform),
+    () => video.isConnected && failNativePlayer(platform)
+  );
 }
 
 // --- AirPlay (Safari) and Chromecast (Chrome): the video goes to the TV, the chat stays here ---
@@ -1323,9 +1442,11 @@ function loadCastSdk() {
 
 function startAirPlay() {
   playerState.native = true;
+  playerState.captions = true;
   renderPlayer();
   const video = playerFrameEl.querySelector("video.native-player");
-  // The picker needs this click's user gesture; the src is set synchronously above.
+  if (video) setNativeSource(video, playerState.source);
+  // The picker needs this click's user gesture; the captioned src is set synchronously above.
   try {
     video?.webkitShowPlaybackTargetPicker();
   } catch (_) {}
@@ -1378,6 +1499,11 @@ function renderPlayerButtons() {
   playerToggleEl.innerHTML = playerState.open ? PLAYER_ICONS.hide : PLAYER_ICONS.play;
   playerToggleEl.title = playerState.open ? "Hide the video" : "Show stream player";
 
+
+  playerSoundEl.classList.toggle("hidden", !hasSource || Boolean(playerState.casting));
+  playerSoundEl.classList.toggle("muted", !playerState.sound);
+  playerSoundEl.innerHTML = playerState.sound ? PLAYER_ICONS.sound : `${PLAYER_ICONS.muted}<span>Unmute</span>`;
+  playerSoundEl.title = playerState.sound ? "Mute the stream" : "Turn the stream sound on";
 
   const castable = hasSource && NATIVE_PLATFORMS.includes(playerState.source);
   const castReady = airplaySupported || (castState.ready && (castState.available || playerState.casting));
@@ -1600,6 +1726,12 @@ if (playerToggleEl) {
     savePlayerState();
     renderPlayer();
     if (wasNearBottom) requestAnimationFrame(() => { feedEl.scrollTop = feedEl.scrollHeight; });
+  });
+  // Embeds reload unmuted (iOS only lets a cross-origin player gain sound on a fresh load);
+  // the native player just unmutes in place.
+  playerSoundEl.addEventListener("click", () => {
+    playerState.sound = !playerState.sound;
+    renderPlayer();
   });
   playerCastEl.addEventListener("click", () => {
     if (airplaySupported) {

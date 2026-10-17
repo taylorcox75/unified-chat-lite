@@ -62,18 +62,40 @@ class Session:
     playlist: tuple[float, list[Segment], int, float] | None = None  # fetched_at, segments, disc. seq, target
     snapshots: dict[int, str] = field(default_factory=dict)
     pts: dict[str, int] = field(default_factory=dict)
+    hidden_platforms: set[str] = field(default_factory=set)  # the viewer's filter chips
+
+
+class _TvViewer(Viewer):
+    """The AirPlay session's hub subscription: no socket, so fan-out is a no-op."""
+
+    async def send(self, payload: dict) -> None:
+        pass
+
+    async def send_text(self, text: str) -> None:
+        pass
 
 
 class AirPlayChat:
     def __init__(self, hub: Hub):
         self.hub = hub
         self.sessions: dict[tuple, Session] = {}
+        self._http_client: AsyncSession | None = None
+        self._http_loop: asyncio.AbstractEventLoop | None = None
+
+    def _http(self) -> AsyncSession:
+        """One shared client per event loop, so a TV polling every ~2s reuses its CDN
+        connections instead of a new TLS handshake per request."""
+        loop = asyncio.get_running_loop()
+        if self._http_client is None or self._http_loop is not loop:
+            self._http_client = AsyncSession(impersonate="chrome")
+            self._http_loop = loop
+        return self._http_client
 
     async def session(self, platform: str, channel: str, channels: dict[str, str]) -> Session:
         key = (platform, channel, tuple(sorted(channels.items())))
         session = self.sessions.get(key)
         if session is None:
-            session = Session(platform, channel, channels, Viewer(None))
+            session = Session(platform, channel, channels, _TvViewer(None))
             self.sessions[key] = session
             for chat_platform, chat_channel in channels.items():
                 await self.hub.subscribe(session.viewer, chat_platform, chat_channel)
@@ -96,8 +118,7 @@ class AirPlayChat:
         session.master_url = await streams.stream_url(session.platform, session.channel) or ""
         if not session.master_url:
             return None
-        async with AsyncSession(impersonate="chrome") as http:
-            response = await http.get(session.master_url, timeout=10)
+        response = await self._http().get(session.master_url, timeout=10)
         if response.status_code >= 400:
             return None
         lines = response.text.splitlines()
@@ -187,8 +208,7 @@ class AirPlayChat:
         now = time.monotonic()
         if session.playlist and now - session.playlist[0] < PLAYLIST_CACHE_SECONDS:
             return session.playlist[1:]
-        async with AsyncSession(impersonate="chrome") as http:
-            response = await http.get(session.reference_url, timeout=10)
+        response = await self._http().get(session.reference_url, timeout=10)
         if response.status_code >= 400:
             return None
         segments, discontinuity_sequence, target = _parse_media_playlist(response.text, session.reference_url)
@@ -199,10 +219,9 @@ class AirPlayChat:
         if uri in session.pts:
             return session.pts[uri]
         try:
-            async with AsyncSession(impersonate="chrome") as http:
-                response = await http.get(
-                    uri, headers={"Range": f"bytes=0-{TS_HEAD_BYTES - 1}"}, timeout=10
-                )
+            response = await self._http().get(
+                uri, headers={"Range": f"bytes=0-{TS_HEAD_BYTES - 1}"}, timeout=10
+            )
             pts = _first_pts(response.content[:TS_HEAD_BYTES]) if response.status_code < 400 else None
         except Exception:
             pts = None
@@ -214,6 +233,8 @@ class AirPlayChat:
     def _chat_text(self, session: Session) -> str:
         messages = []
         for key in session.viewer.keys:
+            if key[0] in session.hidden_platforms:
+                continue
             handle = self.hub.channels.get(key)
             if handle is not None:
                 messages.extend(m for m in handle.recent if not m.deleted and m.text.strip())
